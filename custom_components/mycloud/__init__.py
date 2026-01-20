@@ -13,12 +13,10 @@ from wdnas_client import client as nas_client
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
-
 PLATFORMS: list[str] = ["sensor"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up MyCloud from a config entry using ephemeral sessions (login per refresh)."""
     host = entry.data["Host"]
     username = entry.data["Username"]
     password = entry.data["Password"]
@@ -36,13 +34,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return {"_error": f"{type(err).__name__}: {err}"}
 
     async def _fetch_data_from_api() -> dict[str, Any]:
-        """Fetch base data + extra endpoints (alerts/network/shares)."""
         data: dict[str, Any] = {
             "system_info": await client.system_info(),
             "system_status": await client.system_status(),
             "device_info": await client.device_info(),
             "system_version": await client.system_version(),
-
             "alerts": await _safe(client.alerts()),
             "network_info": await _safe(client.network_info()),
             "share_names": await _safe(client.share_names()),
@@ -58,13 +54,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         return data
 
+    async def _try_logout():
+        """Best-effort explicit logout if wdnas_client exposes it."""
+        try:
+            logout_fn = getattr(client, "logout", None)
+            if callable(logout_fn):
+                await logout_fn()
+        except Exception as err:
+            _LOGGER.debug("Logout failed (ignored): %s", err)
+
     async def _async_update_data() -> dict[str, Any]:
-        """
-        Ephemeral session:
-        - login just for this poll
-        - fetch data
-        - logout immediately
-        """
         try:
             await client.__aenter__()  # LOGIN
             data = await _fetch_data_from_api()
@@ -74,7 +73,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as err:
             raise UpdateFailed(f"Error fetching data: {err}") from err
         finally:
-            # LOGOUT (best effort) — to allow browser admin login
+            # try explicit logout first, then close session
+            await _try_logout()
             try:
                 await client.__aexit__(None, None, None)
             except Exception:
@@ -93,14 +93,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
     }
 
-    # IMPORTANT: raise ConfigEntryNotReady here (before forwarding platforms)
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as err:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         raise ConfigEntryNotReady(f"Initial data fetch failed: {err}") from err
 
-    # Optional one-time dump (safe to keep or delete)
+    # optional one-time dump
     dump_done = hass.data.setdefault(DOMAIN, {}).setdefault("_dump_done", set())
     if entry.entry_id not in dump_done:
         dump_done.add(entry.entry_id)
