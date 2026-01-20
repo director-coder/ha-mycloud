@@ -1,11 +1,12 @@
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
+
 from .const import DOMAIN
 
 
-class MyCloudOptionsFlowHandler(config_entries.OptionsFlow):
-    # ВАЖНО: не принимаем config_entry и не присваиваем self.config_entry
+class MyCloudOptionsFlowHandler(config_entries.OptionsFlowWithReload):
+    """Handle options for My Cloud."""
 
     async def async_step_init(self, user_input=None):
         """Manage the options."""
@@ -31,10 +32,13 @@ class MyCloudOptionsFlowHandler(config_entries.OptionsFlow):
 
 
 class MyCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Config flow for My Cloud."""
+
+    VERSION = 1
+
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        # ВАЖНО: возвращаем handler без аргументов
         return MyCloudOptionsFlowHandler()
 
     async def async_step_user(self, user_input=None):
