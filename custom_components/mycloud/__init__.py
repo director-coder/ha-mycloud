@@ -79,10 +79,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         await coordinator.async_config_entry_first_refresh()
         import json
-        _LOGGER.debug(
-            "RAW DATA FROM NAS:\n%s",
-            json.dumps(coordinator.data, indent=2, ensure_ascii=False),
-        )
+
+        path = hass.config.path(f"mycloud_raw_{entry.entry_id}.json")
+        data = coordinator.data
+
+# 1) Пишем в файл (чтобы ничего не обрезалось)
+        def _write():
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+
+        await hass.async_add_executor_job(_write)
+
+# 2) И печатаем WARNING одной строкой, чтобы точно увидеть в логах
+        _LOGGER.warning("MyCloud RAW data dumped to %s", path)
+
     except Exception as err:
         # cleanup on failure
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
