@@ -1,110 +1,45 @@
 import logging
-from datetime import timedelta
+
 from homeassistant.components.sensor import SensorEntity, SensorStateClass, SensorDeviceClass
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed, CoordinatorEntity
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.const import UnitOfTemperature
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
-
-from wdnas_client import client as nas_client
 
 from .const import DOMAIN
 
-
 _LOGGER = logging.getLogger(__name__)
 
+
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, async_add_entities):
-    """Set up the WD My Cloud sensor platform."""
-    host = config_entry.data["Host"]
-    username = config_entry.data["Username"]
-    password = config_entry.data["Password"]
-    version = config_entry.data["Version"]
+    """Set up MyCloud sensors from a config entry."""
+    entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id)
+    if not entry_data:
+        _LOGGER.error("Missing entry data for entry_id=%s", config_entry.entry_id)
+        return
 
-    client = nas_client(username, password, host, version)
-    
-    try:
-        await client.__aenter__()
-    except Exception as err:
-        raise ConfigEntryNotReady(f"Cannot connect/login to MyCloud: {err}") from err
+    coordinator = entry_data.get("coordinator")
+    if coordinator is None or not isinstance(getattr(coordinator, "data", None), dict):
+        _LOGGER.error("Coordinator not ready for entry_id=%s", config_entry.entry_id)
+        return
 
-    update_interval_seconds = config_entry.options.get("update_interval", 600)
-    SCAN_INTERVAL = timedelta(seconds=update_interval_seconds)
-    _LOGGER.debug("Update interval set to %s seconds", update_interval_seconds)
-
-
-    async def _fetch_data_from_api():
-        """Fetch all necessary data from the API."""
-        system_info = await client.system_info()
-        system_status = await client.system_status()
-        device_info = await client.device_info()
-        system_version = await client.system_version()
-
-        return {
-            "system_info": system_info,
-            "system_status": system_status,
-            "device_info": device_info,
-            "system_version": system_version
-        }
-
-
-    async def async_update_data():
-        """Fetch data from API. If session expires, attempt re-authentication and retry once."""
-        try:
-            return await _fetch_data_from_api()
-        
-        except Exception as err:
-            if "403" in str(err):
-                _LOGGER.warning("Session expired (403 error). Attempting to re-authenticate.")
-                
-                try:
-                    await client.__aenter__()
-                    
-                    _LOGGER.debug("Re-authentication successful. Retrying data fetch.")
-                    return await _fetch_data_from_api()
-
-                except Exception as retry_err:
-                    _LOGGER.error("Re-authentication failed: %s", retry_err, exc_info=True)
-                    raise UpdateFailed(f"Failed to fetch data after re-authentication: {retry_err}") from retry_err
-            
-            _LOGGER.error("Error fetching data: %s", err, exc_info=True)
-            raise UpdateFailed(f"Error fetching data: {err}") from err
-
-
-    coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name="mycloud_coordinator",
-        update_method=async_update_data,
-        update_interval=SCAN_INTERVAL,
-    )
-
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except Exception as err:
-        raise ConfigEntryNotReady(f"Initial data fetch failed: {err}") from err
-
-    if not isinstance(coordinator.data, dict):
-        raise ConfigEntryNotReady("No data received from device yet")
-
-    device_info_data = coordinator.data.get("device_info")
-    system_version_data = coordinator.data.get("system_version")
-    if not isinstance(device_info_data, dict) or not isinstance(system_version_data, dict):
-        raise ConfigEntryNotReady("device_info/system_version missing in response")
+    device_info_data = coordinator.data.get("device_info") or {}
+    system_version_data = coordinator.data.get("system_version") or {}
 
     serial_number = device_info_data.get("serial_number")
     device_name = device_info_data.get("name")
     if not serial_number or not device_name:
-        raise ConfigEntryNotReady("serial_number/name missing in device_info")
+        _LOGGER.error("device_info missing serial_number/name: %s", device_info_data)
+        return
 
     device = DeviceInfo(
         identifiers={(DOMAIN, serial_number)},
         name=device_name,
         manufacturer="Western Digital",
-        model=device_info_data["description"],
-        sw_version=system_version_data["firmware"]
+        model=device_info_data.get("description"),
+        sw_version=system_version_data.get("firmware"),
     )
 
     sensors_to_add = [
@@ -112,68 +47,74 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
         MyCloudMemorySensor(coordinator, device, serial_number, device_name),
         MyCloudTotalStorageSensor(coordinator, device, serial_number, device_name),
         MyCloudUsedStorageSensor(coordinator, device, serial_number, device_name),
-        MyCloudUnusedStorageSensor(coordinator, device, serial_number, device_name)
+        MyCloudUnusedStorageSensor(coordinator, device, serial_number, device_name),
     ]
 
     system_info = coordinator.data.get("system_info") or {}
     disks = system_info.get("disks") or []
-    for disk in disks:
-        disk_serial = disk["sn"]
-        disk_name = f"{device_name} Disk {disk['name']}"
-        disk_model = disk["model"]
+    if isinstance(disks, list):
+        for disk in disks:
+            disk_serial = disk.get("sn")
+            if not disk_serial:
+                continue
 
-        disk_device = DeviceInfo(
-            identifiers={(DOMAIN, disk_serial)},
-            name=disk_name,
-            manufacturer="Western Digital",
-            model=disk_model,
-            sw_version=system_version_data["firmware"],
-            hw_version=disk["rev"],
-            via_device=(DOMAIN, serial_number)
-        )
+            disk_name = f"{device_name} Disk {disk.get('name', '')}".strip()
+            disk_model = disk.get("model")
 
-        sensors_to_add.extend([
-            MyCloudDiskTempSensor(coordinator, disk_device, disk_serial, disk_name, disk),
-            MyCloudDiskHealthySensor(coordinator, disk_device, disk_serial, disk_name, disk),
-            MyCloudDiskSleepSensor(coordinator, disk_device, disk_serial, disk_name, disk),
-            MyCloudDiskFailedSensor(coordinator, disk_device, disk_serial, disk_name, disk),
-            MyCloudDiskOverTempSensor(coordinator, disk_device, disk_serial, disk_name, disk),
-            MyCloudDiskSizeSensor(coordinator, disk_device, disk_serial, disk_name, disk)
-        ])
+            disk_device = DeviceInfo(
+                identifiers={(DOMAIN, disk_serial)},
+                name=disk_name,
+                manufacturer="Western Digital",
+                model=disk_model,
+                sw_version=system_version_data.get("firmware"),
+                hw_version=disk.get("rev"),
+                via_device=(DOMAIN, serial_number),
+            )
 
-    system_info = coordinator.data.get("system_info") or {}
+            sensors_to_add.extend(
+                [
+                    MyCloudDiskTempSensor(coordinator, disk_device, disk_serial, disk_name, disk),
+                    MyCloudDiskHealthySensor(coordinator, disk_device, disk_serial, disk_name, disk),
+                    MyCloudDiskSleepSensor(coordinator, disk_device, disk_serial, disk_name, disk),
+                    MyCloudDiskFailedSensor(coordinator, disk_device, disk_serial, disk_name, disk),
+                    MyCloudDiskOverTempSensor(coordinator, disk_device, disk_serial, disk_name, disk),
+                    MyCloudDiskSizeSensor(coordinator, disk_device, disk_serial, disk_name, disk),
+                ]
+            )
+
     volumes = system_info.get("volumes") or []
-    for volume in volumes:
-        volume_id = volume["id"]
-        volume_name = f"{device_name} {volume['label']}"
+    if isinstance(volumes, list):
+        for volume in volumes:
+            volume_id = volume.get("id")
+            label = volume.get("label", "")
+            if not volume_id:
+                continue
 
-        volume_device = DeviceInfo(
-            identifiers={(DOMAIN, volume_id)},
-            name=volume_name,
-            manufacturer="Western Digital",
-            model="Storage Volume",
-            via_device=(DOMAIN, serial_number)
-        )
+            volume_name = f"{device_name} {label}".strip()
 
-        sensors_to_add.extend([
-            MyCloudVolumeSizeSensor(coordinator, volume_device, volume_name, volume),
-            MyCloudVolumeMountedSensor(coordinator, volume_device, volume_name, volume),
-            MyCloudVolumeUnlockedSensor(coordinator, volume_device, volume_name, volume),
-            MyCloudVolumeEncryptedSensor(coordinator, volume_device, volume_name, volume)
-        ])
+            volume_device = DeviceInfo(
+                identifiers={(DOMAIN, volume_id)},
+                name=volume_name,
+                manufacturer="Western Digital",
+                model="Storage Volume",
+                via_device=(DOMAIN, serial_number),
+            )
+
+            sensors_to_add.extend(
+                [
+                    MyCloudVolumeSizeSensor(coordinator, volume_device, volume_name, volume),
+                    MyCloudVolumeMountedSensor(coordinator, volume_device, volume_name, volume),
+                    MyCloudVolumeUnlockedSensor(coordinator, volume_device, volume_name, volume),
+                    MyCloudVolumeEncryptedSensor(coordinator, volume_device, volume_name, volume),
+                ]
+            )
 
     async_add_entities(sensors_to_add, True)
 
-    hass.data.setdefault(DOMAIN, {})["client_cleanup"] = client.__aexit__
 
-
-async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry):
-    """Unload a config entry."""
-    client_cleanup = hass.data[DOMAIN].get("client_cleanup")
-    if client_cleanup:
-        await client_cleanup(None, None, None)
-    return True
-
+# =========================
+# Entities (твои классы)
+# =========================
 
 class MyCloudSensorBase(CoordinatorEntity, SensorEntity):
     """Base sensor class for MyCloud."""
@@ -198,7 +139,8 @@ class MyCloudCPUSensor(MyCloudSensorBase):
 
     @property
     def native_value(self):
-        return self.coordinator.data["system_info"]["cpu"]["usage"]
+        data = self.coordinator.data or {}
+        return (((data.get("system_info") or {}).get("cpu") or {}).get("usage"))
 
 
 class MyCloudMemorySensor(MyCloudSensorBase):
@@ -211,7 +153,8 @@ class MyCloudMemorySensor(MyCloudSensorBase):
 
     @property
     def native_value(self):
-        return self.coordinator.data["system_info"]["memory"]["usage"]
+        data = self.coordinator.data or {}
+        return (((data.get("system_info") or {}).get("memory") or {}).get("usage"))
 
 
 class MyCloudTotalStorageSensor(MyCloudSensorBase):
@@ -224,7 +167,10 @@ class MyCloudTotalStorageSensor(MyCloudSensorBase):
 
     @property
     def native_value(self):
-        total_bytes = self.coordinator.data["system_info"]["storage"]["total"]
+        data = self.coordinator.data or {}
+        total_bytes = (((data.get("system_info") or {}).get("storage") or {}).get("total"))
+        if total_bytes is None:
+            return None
         return round(total_bytes / (1024 ** 3), 2)
 
 
@@ -238,7 +184,10 @@ class MyCloudUsedStorageSensor(MyCloudSensorBase):
 
     @property
     def native_value(self):
-        used_bytes = self.coordinator.data["system_info"]["storage"]["used"]
+        data = self.coordinator.data or {}
+        used_bytes = (((data.get("system_info") or {}).get("storage") or {}).get("used"))
+        if used_bytes is None:
+            return None
         return round(used_bytes / (1024 ** 3), 2)
 
 
@@ -252,8 +201,11 @@ class MyCloudUnusedStorageSensor(MyCloudSensorBase):
 
     @property
     def native_value(self):
-        unused_bytes = self.coordinator.data["system_info"]["storage"]["free"]
-        return round(unused_bytes / (1024 ** 3), 2)
+        data = self.coordinator.data or {}
+        free_bytes = (((data.get("system_info") or {}).get("storage") or {}).get("free"))
+        if free_bytes is None:
+            return None
+        return round(free_bytes / (1024 ** 3), 2)
 
 
 class MyCloudDiskTempSensor(MyCloudSensorBase):
@@ -270,7 +222,7 @@ class MyCloudDiskTempSensor(MyCloudSensorBase):
 
     @property
     def native_value(self):
-        return self._disk_data["temp"]
+        return self._disk_data.get("temp")
 
 
 class MyCloudDiskHealthySensor(MyCloudSensorBase, BinarySensorEntity):
@@ -290,7 +242,7 @@ class MyCloudDiskHealthySensor(MyCloudSensorBase, BinarySensorEntity):
 
     @property
     def is_on(self):
-        return self._disk_data["healthy"]
+        return bool(self._disk_data.get("healthy"))
 
 
 class MyCloudDiskSleepSensor(MyCloudSensorBase, BinarySensorEntity):
@@ -308,7 +260,7 @@ class MyCloudDiskSleepSensor(MyCloudSensorBase, BinarySensorEntity):
 
     @property
     def is_on(self):
-        return self._disk_data["sleeping"]
+        return bool(self._disk_data.get("sleeping"))
 
 
 class MyCloudDiskFailedSensor(MyCloudSensorBase, BinarySensorEntity):
@@ -328,7 +280,7 @@ class MyCloudDiskFailedSensor(MyCloudSensorBase, BinarySensorEntity):
 
     @property
     def is_on(self):
-        return self._disk_data["failed"]
+        return bool(self._disk_data.get("failed"))
 
 
 class MyCloudDiskOverTempSensor(MyCloudSensorBase, BinarySensorEntity):
@@ -348,7 +300,7 @@ class MyCloudDiskOverTempSensor(MyCloudSensorBase, BinarySensorEntity):
 
     @property
     def is_on(self):
-        return self._disk_data["over_temp"]
+        return bool(self._disk_data.get("over_temp"))
 
 
 class MyCloudDiskSizeSensor(MyCloudSensorBase):
@@ -365,7 +317,10 @@ class MyCloudDiskSizeSensor(MyCloudSensorBase):
 
     @property
     def native_value(self):
-        return round(self._disk_data["size"] / (1024 ** 3), 2)
+        size = self._disk_data.get("size")
+        if size is None:
+            return None
+        return round(size / (1024 ** 3), 2)
 
 
 class MyCloudVolumeSizeSensor(MyCloudSensorBase):
@@ -382,7 +337,10 @@ class MyCloudVolumeSizeSensor(MyCloudSensorBase):
 
     @property
     def native_value(self):
-        return round(self._volume_data["size"] / (1024 ** 3), 2)
+        size = self._volume_data.get("size")
+        if size is None:
+            return None
+        return round(size / (1024 ** 3), 2)
 
 
 class MyCloudVolumeMountedSensor(MyCloudSensorBase, BinarySensorEntity):
@@ -400,7 +358,7 @@ class MyCloudVolumeMountedSensor(MyCloudSensorBase, BinarySensorEntity):
 
     @property
     def is_on(self):
-        return self._volume_data["mounted"]
+        return bool(self._volume_data.get("mounted"))
 
 
 class MyCloudVolumeUnlockedSensor(MyCloudSensorBase, BinarySensorEntity):
@@ -418,7 +376,7 @@ class MyCloudVolumeUnlockedSensor(MyCloudSensorBase, BinarySensorEntity):
 
     @property
     def is_on(self):
-        return self._volume_data["unlocked"]
+        return bool(self._volume_data.get("unlocked"))
 
 
 class MyCloudVolumeEncryptedSensor(MyCloudSensorBase, BinarySensorEntity):
@@ -438,5 +396,5 @@ class MyCloudVolumeEncryptedSensor(MyCloudSensorBase, BinarySensorEntity):
 
     @property
     def is_on(self):
-        return self._volume_data["encrypted"]
+        return bool(self._volume_data.get("encrypted"))
 
