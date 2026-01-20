@@ -78,6 +78,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # IMPORTANT: raise ConfigEntryNotReady HERE (before forwarding platforms)
     try:
         await coordinator.async_config_entry_first_refresh()
+        import json
+        _LOGGER.debug(
+            "RAW DATA FROM NAS:\n%s",
+            json.dumps(coordinator.data, indent=2, ensure_ascii=False),
+        )
     except Exception as err:
         # cleanup on failure
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
