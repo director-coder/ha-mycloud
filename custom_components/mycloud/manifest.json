@@ -1,7 +1,7 @@
 {
   "domain": "mycloud",
-  "name": "My Cloud",
-  "codeowners": ["@J-shw"],
+  "name": "My Cloud Plus",
+  "codeowners": ["@J-shw","@director-coder"],
   "config_flow": true,
   "documentation": "https://github.com/J-shw/wdnas_hacs",
   "iot_class": "local_polling",
