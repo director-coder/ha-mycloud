@@ -18,7 +18,7 @@ PLATFORMS: list[str] = ["sensor"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up MyCloud from a config entry (raise ConfigEntryNotReady BEFORE forwarding platforms)."""
+    """Set up MyCloud from a config entry using ephemeral sessions (login per refresh)."""
     host = entry.data["Host"]
     username = entry.data["Username"]
     password = entry.data["Password"]
@@ -29,12 +29,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     client = nas_client(username, password, host, version)
 
-    # Open session BEFORE platform setup
-    try:
-        await client.__aenter__()
-    except Exception as err:
-        raise ConfigEntryNotReady(f"Cannot connect/login to MyCloud: {err}") from err
-
     async def _safe(coro):
         try:
             return await coro
@@ -42,7 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return {"_error": f"{type(err).__name__}: {err}"}
 
     async def _fetch_data_from_api() -> dict[str, Any]:
-        """Fetch base data + extra endpoints for discovery (RAID/alerts/etc)."""
+        """Fetch base data + extra endpoints (alerts/network/shares) for sensors/diagnostics."""
         data: dict[str, Any] = {
             # Base (used by sensors)
             "system_info": await client.system_info(),
@@ -50,7 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "device_info": await client.device_info(),
             "system_version": await client.system_version(),
 
-            # Extra (for testing / discovery)
+            # Extra
             "alerts": await _safe(client.alerts()),
             "network_info": await _safe(client.network_info()),
             "share_names": await _safe(client.share_names()),
@@ -68,30 +62,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return data
 
     async def _async_update_data() -> dict[str, Any]:
+        """
+        Ephemeral session:
+        - login just for this poll
+        - fetch data
+        - logout immediately
+        """
         try:
+            await client.__aenter__()  # LOGIN
             data = await _fetch_data_from_api()
+            if not isinstance(data, dict):
+                raise UpdateFailed("Empty/invalid response from device")
+            return data
+
         except Exception as err:
-            # Retry once on 403 (session expired)
-            if "403" in str(err):
-                _LOGGER.warning("Session expired (403). Re-authenticating and retrying.")
-                try:
-                    # best-effort close before re-open to avoid aiohttp session leaks
-                    try:
-                        await client.__aexit__(None, None, None)
-                    except Exception:
-                        pass
+            raise UpdateFailed(f"Error fetching data: {err}") from err
 
-                    await client.__aenter__()
-                    data = await _fetch_data_from_api()
-                except Exception as retry_err:
-                    raise UpdateFailed(f"Re-authentication failed: {retry_err}") from retry_err
-            else:
-                raise UpdateFailed(f"Error fetching data: {err}") from err
-
-        if not isinstance(data, dict):
-            raise UpdateFailed("Empty/invalid response from device")
-
-        return data
+        finally:
+            # LOGOUT (best effort) — key part to allow browser admin login
+            try:
+                await client.__aexit__(None, None, None)
+            except Exception:
+                pass
 
     coordinator = DataUpdateCoordinator(
         hass,
@@ -106,19 +98,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinator": coordinator,
     }
 
-    # IMPORTANT: raise ConfigEntryNotReady HERE (before forwarding platforms)
+    # IMPORTANT: raise ConfigEntryNotReady here (before forwarding platforms)
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as err:
-        # cleanup on failure
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-        try:
-            await client.__aexit__(type(err), err, err.__traceback__)
-        except Exception:
-            pass
         raise ConfigEntryNotReady(f"Initial data fetch failed: {err}") from err
 
-    # One-time full dump to /config for analysis
+    # One-time full dump to /config for analysis (optional, can remove later)
     dump_done = hass.data.setdefault(DOMAIN, {}).setdefault("_dump_done", set())
     if entry.entry_id not in dump_done:
         dump_done.add(entry.entry_id)
@@ -143,14 +130,8 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    entry_data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-    if entry_data:
-        client = entry_data.get("client")
-        if client is not None:
-            try:
-                await client.__aexit__(None, None, None)
-            except Exception as err:
-                _LOGGER.debug("Error while closing client: %s", err)
+    # We don't keep a session open, but cleanup stored refs
+    hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
 
     return unload_ok
 
