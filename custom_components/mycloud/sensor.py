@@ -40,6 +40,37 @@ def _find_volume(data: dict, volume_id: str) -> dict | None:
     return None
 
 
+def _parse_alerts(alerts_obj: Any) -> list[dict]:
+    """
+    Your JSON shows alerts like:
+      "alerts": [ 1, [ {..}, {..} ] ]
+    Sometimes it can be just list of dicts, or empty.
+    Return list of alert dicts.
+    """
+    if alerts_obj is None:
+        return []
+    if isinstance(alerts_obj, list):
+        # Format: [status, [alerts...]]
+        if len(alerts_obj) == 2 and isinstance(alerts_obj[1], list):
+            return [a for a in alerts_obj[1] if isinstance(a, dict)]
+        # Format: [ {..}, {..} ]
+        if all(isinstance(x, dict) for x in alerts_obj):
+            return alerts_obj
+    return []
+
+
+def _pick_primary_iface(network_info: Any) -> tuple[str | None, dict]:
+    """
+    network_info is dict keyed by MAC.
+    Return (mac, info_dict) for first iface.
+    """
+    if not isinstance(network_info, dict) or not network_info:
+        return None, {}
+    mac = next(iter(network_info.keys()))
+    info = network_info.get(mac)
+    return mac, info if isinstance(info, dict) else {}
+
+
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, async_add_entities):
     entry_data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id)
     if not entry_data:
@@ -71,11 +102,18 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
     )
 
     entities: list = [
+        # Core
         MyCloudCPUSensor(coordinator, device, serial_number, device_name),
         MyCloudMemoryUsageSensor(coordinator, device, serial_number, device_name),
         MyCloudTotalStorageSensor(coordinator, device, serial_number, device_name),
         MyCloudUsedStorageSensor(coordinator, device, serial_number, device_name),
         MyCloudUnusedStorageSensor(coordinator, device, serial_number, device_name),
+
+        # New: alerts/network/shares
+        MyCloudAlertsCountSensor(coordinator, device, serial_number, device_name),
+        MyCloudLastAlertSensor(coordinator, device, serial_number, device_name),
+        MyCloudNetworkSummarySensor(coordinator, device, serial_number, device_name),
+        MyCloudSharesSensor(coordinator, device, serial_number, device_name),
     ]
 
     # Disks
@@ -145,6 +183,10 @@ class MyCloudBase(CoordinatorEntity):
         self._attr_unique_id = unique_id
         self._attr_name = name
 
+
+# =========================
+# Core sensors
+# =========================
 
 class MyCloudCPUSensor(MyCloudBase, SensorEntity):
     _attr_native_unit_of_measurement = "%"
@@ -228,6 +270,129 @@ class MyCloudUnusedStorageSensor(MyCloudBase, SensorEntity):
         return None if unused is None else round(unused / (1024 ** 3), 2)
 
 
+# =========================
+# New sensors: Alerts / Network / Shares
+# =========================
+
+class MyCloudAlertsCountSensor(MyCloudBase, SensorEntity):
+    """Count of current alerts."""
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, device, serial_number, device_name):
+        super().__init__(coordinator, device, f"{serial_number}_alerts_count", f"{device_name} Alerts Count")
+
+    @property
+    def native_value(self):
+        alerts = _parse_alerts((self.coordinator.data or {}).get("alerts"))
+        return len(alerts)
+
+    @property
+    def extra_state_attributes(self):
+        alerts = _parse_alerts((self.coordinator.data or {}).get("alerts"))
+        # keep first 10 to avoid huge attributes
+        top = alerts[:10]
+        return {"alerts_preview": top}
+
+
+class MyCloudLastAlertSensor(MyCloudBase, SensorEntity):
+    """Last alert message (string)."""
+    def __init__(self, coordinator, device, serial_number, device_name):
+        super().__init__(coordinator, device, f"{serial_number}_last_alert", f"{device_name} Last Alert")
+
+    @property
+    def native_value(self):
+        alerts = _parse_alerts((self.coordinator.data or {}).get("alerts"))
+        if not alerts:
+            return None
+        return alerts[-1].get("msg")
+
+    @property
+    def extra_state_attributes(self):
+        alerts = _parse_alerts((self.coordinator.data or {}).get("alerts"))
+        if not alerts:
+            return {}
+        a = alerts[-1]
+        return {
+            "code": a.get("code"),
+            "level": a.get("level"),
+            "desc": a.get("desc"),
+            "time": a.get("time"),
+            "seq_num": a.get("seq_num"),
+        }
+
+
+class MyCloudNetworkSummarySensor(MyCloudBase, SensorEntity):
+    """Network summary from first interface."""
+    def __init__(self, coordinator, device, serial_number, device_name):
+        super().__init__(coordinator, device, f"{serial_number}_network_summary", f"{device_name} Network Summary")
+
+    @property
+    def native_value(self):
+        mac, info = _pick_primary_iface((self.coordinator.data or {}).get("network_info"))
+        if not mac or not info:
+            return None
+        # show IP as state
+        return info.get("ip")
+
+    @property
+    def extra_state_attributes(self):
+        mac, info = _pick_primary_iface((self.coordinator.data or {}).get("network_info"))
+        if not mac or not info:
+            return {}
+        return {
+            "mac": mac,
+            "ip": info.get("ip"),
+            "netmask": info.get("netmask"),
+            "gateway": info.get("gateway"),
+            "dns1": info.get("dns1"),
+            "dns2": info.get("dns2"),
+            "dns3": info.get("dns3"),
+            "dhcp_enable": info.get("dhcp_enable"),
+            "lan_speed": info.get("lan_speed"),     # e.g. "100"
+            "lan_enabled": info.get("lan_enabled"),
+            "dns_manual": info.get("dns_manual"),
+        }
+
+
+class MyCloudSharesSensor(MyCloudBase, SensorEntity):
+    """Shares summary: number of shares; list in attributes."""
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator, device, serial_number, device_name):
+        super().__init__(coordinator, device, f"{serial_number}_shares_count", f"{device_name} Shares Count")
+
+    @property
+    def native_value(self):
+        shares = (self.coordinator.data or {}).get("share_names")
+        if not isinstance(shares, list):
+            return None
+        return len(shares)
+
+    @property
+    def extra_state_attributes(self):
+        shares = (self.coordinator.data or {}).get("share_names")
+        if not isinstance(shares, list):
+            return {}
+        # Put both names and paths, but keep it reasonably sized
+        names = []
+        items = []
+        for s in shares[:50]:
+            if isinstance(s, dict):
+                name = s.get("share_name")
+                path = s.get("path")
+                if name:
+                    names.append(name)
+                items.append({"share_name": name, "path": path})
+        return {
+            "share_names": names,
+            "shares": items,
+        }
+
+
+# =========================
+# Disk sensors
+# =========================
+
 class MyCloudDiskTempSensor(MyCloudBase, SensorEntity):
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -308,6 +473,10 @@ class MyCloudDiskOverTempBinarySensor(MyCloudBase, BinarySensorEntity):
         disk = _find_disk(self.coordinator.data or {}, self._disk_name)
         return None if not disk else disk.get("over_temp")
 
+
+# =========================
+# Volume sensors
+# =========================
 
 class MyCloudVolumeSizeSensor(MyCloudBase, SensorEntity):
     _attr_native_unit_of_measurement = "GB"
