@@ -36,22 +36,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return {"_error": f"{type(err).__name__}: {err}"}
 
     async def _fetch_data_from_api() -> dict[str, Any]:
-        """Fetch base data + extra endpoints (alerts/network/shares) for sensors/diagnostics."""
+        """Fetch base data + extra endpoints (alerts/network/shares)."""
         data: dict[str, Any] = {
-            # Base (used by sensors)
             "system_info": await client.system_info(),
             "system_status": await client.system_status(),
             "device_info": await client.device_info(),
             "system_version": await client.system_version(),
 
-            # Extra
             "alerts": await _safe(client.alerts()),
             "network_info": await _safe(client.network_info()),
             "share_names": await _safe(client.share_names()),
             "accounts": await _safe(client.accounts()),
         }
 
-        # Version-specific extras (if supported by library/firmware)
         if version == 5:
             data["uptime"] = await _safe(client.uptime())
             data["usb_info"] = await _safe(client.usb_info())
@@ -74,12 +71,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not isinstance(data, dict):
                 raise UpdateFailed("Empty/invalid response from device")
             return data
-
         except Exception as err:
             raise UpdateFailed(f"Error fetching data: {err}") from err
-
         finally:
-            # LOGOUT (best effort) — key part to allow browser admin login
+            # LOGOUT (best effort) — to allow browser admin login
             try:
                 await client.__aexit__(None, None, None)
             except Exception:
@@ -105,7 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
         raise ConfigEntryNotReady(f"Initial data fetch failed: {err}") from err
 
-    # One-time full dump to /config for analysis (optional, can remove later)
+    # Optional one-time dump (safe to keep or delete)
     dump_done = hass.data.setdefault(DOMAIN, {}).setdefault("_dump_done", set())
     if entry.entry_id not in dump_done:
         dump_done.add(entry.entry_id)
@@ -118,20 +113,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.async_add_executor_job(_write)
         _LOGGER.warning("MyCloud FULL dump written to %s", path)
 
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)
-
-
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
-    # We don't keep a session open, but cleanup stored refs
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-
     return unload_ok
 
