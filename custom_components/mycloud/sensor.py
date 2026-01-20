@@ -138,10 +138,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
     async_add_entities(entities, True)
 
 
-# -----------------------
-# Base entities
-# -----------------------
-
 class MyCloudBase(CoordinatorEntity):
     def __init__(self, coordinator, device: DeviceInfo, unique_id: str, name: str):
         super().__init__(coordinator)
@@ -149,10 +145,6 @@ class MyCloudBase(CoordinatorEntity):
         self._attr_unique_id = unique_id
         self._attr_name = name
 
-
-# -----------------------
-# Main device sensors
-# -----------------------
 
 class MyCloudCPUSensor(MyCloudBase, SensorEntity):
     _attr_native_unit_of_measurement = "%"
@@ -164,10 +156,8 @@ class MyCloudCPUSensor(MyCloudBase, SensorEntity):
 
     @property
     def native_value(self):
-        # RAW: system_status.cpu is int (0..100)
         data = self.coordinator.data or {}
-        cpu = _get_dict(data, "system_status").get("cpu")
-        return cpu
+        return _get_dict(data, "system_status").get("cpu")
 
 
 class MyCloudMemoryUsageSensor(MyCloudBase, SensorEntity):
@@ -180,7 +170,6 @@ class MyCloudMemoryUsageSensor(MyCloudBase, SensorEntity):
 
     @property
     def native_value(self):
-        # RAW: system_status.memory.total/unused (KiB)
         data = self.coordinator.data or {}
         mem = _get_dict(_get_dict(data, "system_status"), "memory")
         total = mem.get("total")
@@ -204,9 +193,7 @@ class MyCloudTotalStorageSensor(MyCloudBase, SensorEntity):
         data = self.coordinator.data or {}
         size = _get_dict(_get_dict(data, "system_info"), "size")
         total = size.get("total")
-        if total is None:
-            return None
-        return round(total / (1024 ** 3), 2)
+        return None if total is None else round(total / (1024 ** 3), 2)
 
 
 class MyCloudUsedStorageSensor(MyCloudBase, SensorEntity):
@@ -222,9 +209,7 @@ class MyCloudUsedStorageSensor(MyCloudBase, SensorEntity):
         data = self.coordinator.data or {}
         size = _get_dict(_get_dict(data, "system_info"), "size")
         used = size.get("used")
-        if used is None:
-            return None
-        return round(used / (1024 ** 3), 2)
+        return None if used is None else round(used / (1024 ** 3), 2)
 
 
 class MyCloudUnusedStorageSensor(MyCloudBase, SensorEntity):
@@ -240,14 +225,8 @@ class MyCloudUnusedStorageSensor(MyCloudBase, SensorEntity):
         data = self.coordinator.data or {}
         size = _get_dict(_get_dict(data, "system_info"), "size")
         unused = size.get("unused")
-        if unused is None:
-            return None
-        return round(unused / (1024 ** 3), 2)
+        return None if unused is None else round(unused / (1024 ** 3), 2)
 
-
-# -----------------------
-# Disk sensors
-# -----------------------
 
 class MyCloudDiskTempSensor(MyCloudBase, SensorEntity):
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
@@ -255,12 +234,7 @@ class MyCloudDiskTempSensor(MyCloudBase, SensorEntity):
     _attr_device_class = SensorDeviceClass.TEMPERATURE
 
     def __init__(self, coordinator, device, disk_sn, disk_name, device_name):
-        super().__init__(
-            coordinator,
-            device,
-            f"{disk_sn}_temperature",
-            f"{device_name} Disk {disk_name} Temperature",
-        )
+        super().__init__(coordinator, device, f"{disk_sn}_temperature", f"{device_name} Disk {disk_name} Temperature")
         self._disk_name = disk_name
 
     @property
@@ -275,12 +249,7 @@ class MyCloudDiskSizeSensor(MyCloudBase, SensorEntity):
     _attr_device_class = SensorDeviceClass.DATA_SIZE
 
     def __init__(self, coordinator, device, disk_sn, disk_name, device_name):
-        super().__init__(
-            coordinator,
-            device,
-            f"{disk_sn}_size",
-            f"{device_name} Disk {disk_name} Size",
-        )
+        super().__init__(coordinator, device, f"{disk_sn}_size", f"{device_name} Disk {disk_name} Size")
         self._disk_name = disk_name
 
     @property
@@ -289,20 +258,12 @@ class MyCloudDiskSizeSensor(MyCloudBase, SensorEntity):
         if not disk:
             return None
         size = disk.get("size")
-        if size is None:
-            return None
-        return round(size / (1024 ** 3), 2)
+        return None if size is None else round(size / (1024 ** 3), 2)
 
 
 class MyCloudDiskHealthyBinarySensor(MyCloudBase, BinarySensorEntity):
-    # healthy itself is not "problem"; but you can keep as plain binary sensor
     def __init__(self, coordinator, device, disk_sn, disk_name, device_name):
-        super().__init__(
-            coordinator,
-            device,
-            f"{disk_sn}_healthy",
-            f"{device_name} Disk {disk_name} Healthy",
-        )
+        super().__init__(coordinator, device, f"{disk_sn}_healthy", f"{device_name} Disk {disk_name} Healthy")
         self._disk_name = disk_name
 
     @property
@@ -313,18 +274,12 @@ class MyCloudDiskHealthyBinarySensor(MyCloudBase, BinarySensorEntity):
 
 class MyCloudDiskSleepBinarySensor(MyCloudBase, BinarySensorEntity):
     def __init__(self, coordinator, device, disk_sn, disk_name, device_name):
-        super().__init__(
-            coordinator,
-            device,
-            f"{disk_sn}_sleep",
-            f"{device_name} Disk {disk_name} Sleeping",
-        )
+        super().__init__(coordinator, device, f"{disk_sn}_sleep", f"{device_name} Disk {disk_name} Sleeping")
         self._disk_name = disk_name
 
     @property
     def is_on(self):
         disk = _find_disk(self.coordinator.data or {}, self._disk_name)
-        # RAW: key is "sleep" (bool)
         return None if not disk else disk.get("sleep")
 
 
@@ -332,12 +287,7 @@ class MyCloudDiskFailedBinarySensor(MyCloudBase, BinarySensorEntity):
     _attr_device_class = "problem"
 
     def __init__(self, coordinator, device, disk_sn, disk_name, device_name):
-        super().__init__(
-            coordinator,
-            device,
-            f"{disk_sn}_failed",
-            f"{device_name} Disk {disk_name} Failed",
-        )
+        super().__init__(coordinator, device, f"{disk_sn}_failed", f"{device_name} Disk {disk_name} Failed")
         self._disk_name = disk_name
 
     @property
@@ -350,12 +300,7 @@ class MyCloudDiskOverTempBinarySensor(MyCloudBase, BinarySensorEntity):
     _attr_device_class = "problem"
 
     def __init__(self, coordinator, device, disk_sn, disk_name, device_name):
-        super().__init__(
-            coordinator,
-            device,
-            f"{disk_sn}_over_temp",
-            f"{device_name} Disk {disk_name} Over Temperature",
-        )
+        super().__init__(coordinator, device, f"{disk_sn}_over_temp", f"{device_name} Disk {disk_name} Over Temperature")
         self._disk_name = disk_name
 
     @property
@@ -364,22 +309,13 @@ class MyCloudDiskOverTempBinarySensor(MyCloudBase, BinarySensorEntity):
         return None if not disk else disk.get("over_temp")
 
 
-# -----------------------
-# Volume sensors
-# -----------------------
-
 class MyCloudVolumeSizeSensor(MyCloudBase, SensorEntity):
     _attr_native_unit_of_measurement = "GB"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_device_class = SensorDeviceClass.DATA_SIZE
 
     def __init__(self, coordinator, device, volume_id: str, volume_name: str, device_name: str):
-        super().__init__(
-            coordinator,
-            device,
-            f"volume_{volume_id}_size",
-            f"{device_name} {volume_name} Size",
-        )
+        super().__init__(coordinator, device, f"volume_{volume_id}_size", f"{device_name} {volume_name} Size")
         self._volume_id = volume_id
 
     @property
@@ -388,19 +324,12 @@ class MyCloudVolumeSizeSensor(MyCloudBase, SensorEntity):
         if not vol:
             return None
         size = vol.get("size")
-        if size is None:
-            return None
-        return round(size / (1024 ** 3), 2)
+        return None if size is None else round(size / (1024 ** 3), 2)
 
 
 class MyCloudVolumeMountedBinarySensor(MyCloudBase, BinarySensorEntity):
     def __init__(self, coordinator, device, volume_id: str, volume_name: str, device_name: str):
-        super().__init__(
-            coordinator,
-            device,
-            f"volume_{volume_id}_mounted",
-            f"{device_name} {volume_name} Mounted",
-        )
+        super().__init__(coordinator, device, f"volume_{volume_id}_mounted", f"{device_name} {volume_name} Mounted")
         self._volume_id = volume_id
 
     @property
@@ -411,12 +340,7 @@ class MyCloudVolumeMountedBinarySensor(MyCloudBase, BinarySensorEntity):
 
 class MyCloudVolumeUnlockedBinarySensor(MyCloudBase, BinarySensorEntity):
     def __init__(self, coordinator, device, volume_id: str, volume_name: str, device_name: str):
-        super().__init__(
-            coordinator,
-            device,
-            f"volume_{volume_id}_unlocked",
-            f"{device_name} {volume_name} Unlocked",
-        )
+        super().__init__(coordinator, device, f"volume_{volume_id}_unlocked", f"{device_name} {volume_name} Unlocked")
         self._volume_id = volume_id
 
     @property
@@ -429,12 +353,7 @@ class MyCloudVolumeEncryptedBinarySensor(MyCloudBase, BinarySensorEntity):
     _attr_device_class = "problem"
 
     def __init__(self, coordinator, device, volume_id: str, volume_name: str, device_name: str):
-        super().__init__(
-            coordinator,
-            device,
-            f"volume_{volume_id}_encrypted",
-            f"{device_name} {volume_name} Encrypted",
-        )
+        super().__init__(coordinator, device, f"volume_{volume_id}_encrypted", f"{device_name} {volume_name} Encrypted")
         self._volume_id = volume_id
 
     @property
