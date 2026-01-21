@@ -1,10 +1,12 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-# В python-базе уже есть python, но зависимости всё равно ставим
-RUN apk add --no-cache py3-flask py3-requests
+# venv + pip внутри venv (обходит PEP668 и не зависит от apk-python paths)
+RUN python3 -m venv /opt/venv \
+  && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+  && /opt/venv/bin/pip install --no-cache-dir flask requests
 
 COPY app /app
 WORKDIR /app
 
-CMD ["python3", "/app/app.py"]
+CMD ["/opt/venv/bin/python", "/app/app.py"]
