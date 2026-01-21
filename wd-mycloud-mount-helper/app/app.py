@@ -176,8 +176,23 @@ async function load(){
     tr.innerHTML = `<td>${row.share_name}</td>
                     <td>${row.mount_name}</td>
                     <td title="">${statusText}</td>
-                    <td>${row.usage}</td>
+                    <td></td>
                     <td></td>`;
+
+    // Usage dropdown (share / media / backup), persisted per-share in localStorage
+    const usageTd = tr.children[3];
+    const usageSel = document.createElement('select');
+    for (const v of ['share','media','backup']) {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = v;
+      usageSel.appendChild(o);
+    }
+    const usageKey = `wdmc_usage_${row.share_name}`;
+    const savedUsage = localStorage.getItem(usageKey);
+    usageSel.value = savedUsage || (row.usage || 'share');
+    usageSel.addEventListener('change', ()=> localStorage.setItem(usageKey, usageSel.value));
+    usageTd.appendChild(usageSel);
 
     const statusTd = tr.children[2];
     const actions = tr.children[4];
@@ -190,7 +205,7 @@ async function load(){
           await api('api/mount', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ share_name: row.share_name, usage: row.usage })
+            body: JSON.stringify({ share_name: row.share_name, usage: usageSel.value })
           });
           await load(); // refresh from Supervisor mounts
         } catch (e) {
@@ -419,4 +434,3 @@ def api_unmount():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8099)
-
