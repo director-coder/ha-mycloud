@@ -1,8 +1,11 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-RUN apk add --no-cache python3 py3-pip
-RUN pip3 install --no-cache-dir flask requests
+# Всё через apk, без pip
+RUN apk add --no-cache \
+    python3 \
+    py3-flask \
+    py3-requests
 
 COPY app /app
 WORKDIR /app
