@@ -15,58 +15,46 @@ CORE_BASE = "http://supervisor/core"
 
 CREDS_PATH = "/data/credentials.json"
 
+
 def load_creds():
     if not os.path.exists(CREDS_PATH):
         return {}
-    with open(CREDS_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(CREDS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
 
 def save_creds(data):
     with open(CREDS_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
 def addon_options():
-    # Supervisor injects add-on options into /data/options.json
-    import json
     with open("/data/options.json", "r", encoding="utf-8") as f:
         return json.load(f)
 
+
 def core_get_state(entity_id: str):
-    print("DEBUG: SUPERVISOR_TOKEN len =", len(SUPERVISOR_TOKEN), file=sys.stderr, flush=True)
-
-    test = requests.get(
-        f"{CORE_BASE}/api/config",
-        headers=HEADERS,
-        timeout=10
-    )
-    print(
-        "DEBUG: core/api/config status =",
-        test.status_code,
-        test.text[:200],
-        file=sys.stderr,
-        flush=True
-    )
-
     url = f"{CORE_BASE}/api/states/{entity_id}"
     r = requests.get(url, headers=HEADERS, timeout=10)
     r.raise_for_status()
     return r.json()
 
-def supervisor_get_mounts():
-    r = requests.get("http://supervisor/info", headers=HEADERS, timeout=10)
-    print("DEBUG supervisor/info", r.status_code, r.text[:120], file=sys.stderr, flush=True)
 
+def supervisor_get_mounts():
     url = f"{SUPERVISOR_BASE}/mounts"
     r = requests.get(url, headers=HEADERS, timeout=10)
     r.raise_for_status()
-    return r.json()["data"]  # { mounts: [...], default_backup_mount: ... }
+    return r.json()["data"]
+
 
 def sanitize_mount_name(name: str) -> str:
     name = re.sub(r"[^A-Za-z0-9_]", "_", name)
     name = re.sub(r"_+", "_", name).strip("_")
-    if not name:
-        name = "share"
-    return name
+    return name or "share"
+
 
 def build_mount_name(prefix: str, share_name: str, existing_names: set[str]) -> str:
     base = sanitize_mount_name(f"{prefix}_{share_name}")
@@ -77,21 +65,58 @@ def build_mount_name(prefix: str, share_name: str, existing_names: set[str]) -> 
         i += 1
     return candidate
 
+
 def extract_nas_ip(network_state: dict) -> str:
-    # Тут зависит от того, как именно ваша интеграция кладёт IP в attributes.
-    # Предположим: attributes.ip или attributes.ip_address
     attrs = network_state.get("attributes", {}) or {}
     return attrs.get("ip") or attrs.get("ip_address") or attrs.get("host") or ""
 
+
 def extract_shares(shares_state: dict):
     attrs = shares_state.get("attributes", {}) or {}
-    shares = attrs.get("shares") or []
-    # expected: [{share_name:..., path:...}, ...]
-    return shares
+    return attrs.get("shares") or []
+
+
+def _extract_supervisor_error_text(resp: requests.Response) -> str:
+    """
+    Supervisor often returns JSON like:
+      {"result":"error","message":"..."}
+    or "ok" with "data". If not JSON, fall back to raw text.
+    """
+    txt = resp.text or ""
+    try:
+        j = resp.json()
+        if isinstance(j, dict):
+            if j.get("result") == "error" and j.get("message"):
+                return str(j.get("message"))
+            if j.get("message"):
+                return str(j.get("message"))
+            # some endpoints return {"error": "..."} style
+            if j.get("error"):
+                return str(j.get("error"))
+        return txt
+    except Exception:
+        return txt
+
+
+def _looks_like_auth_error(text: str) -> bool:
+    t = (text or "").lower()
+    return any(s in t for s in (
+        "permission denied",
+        "access denied",
+        "authentication failed",
+        "nt_status_logon_failure",
+        "logon failure",
+        "invalid credentials",
+        "mount error(13)",
+        "status_access_denied",
+        "credentials",
+        "username",
+        "password",
+    ))
+
 
 @app.get("/")
 def index():
-    # Простая HTML-страница (Ingress)
     return """
 <!doctype html><html><head><meta charset="utf-8"/>
 <title>WD My Cloud Mounts</title>
@@ -110,83 +135,141 @@ small{color:#666}
   <thead><tr><th>Share</th><th>Mount name</th><th>Status</th><th>Usage</th><th>Actions</th></tr></thead>
   <tbody></tbody>
 </table>
+
 <script>
 async function api(path, opts){
   const r = await fetch(path, opts);
   const text = await r.text();
-  let data = null;
-  try { data = JSON.parse(text); } catch(e) {}
+  let payload = null;
+  try { payload = JSON.parse(text); } catch(e) {}
 
   if(!r.ok){
-    // Supervisor errors often come as {result:"error", message:"..."}
-    if(data && data.message) throw new Error(data.message);
-    if(data && data.error) throw new Error(data.error);
+    // Prefer {error:"..."} if present
+    if(payload && payload.error) throw new Error(payload.error);
+    // Or Supervisor style {result:"error", message:"..."}
+    if(payload && payload.result === 'error' && payload.message) throw new Error(payload.message);
     throw new Error(text);
   }
-
-  if(data !== null) return data;
-  return {};
+  return payload ?? {};
 }
-function btn(label, onclick){ const b=document.createElement('button'); b.textContent=label; b.onclick=onclick; return b; }
+
+function btn(label, onclick){
+  const b=document.createElement('button');
+  b.textContent=label;
+  b.onclick=onclick;
+  return b;
+}
 
 async function load(){
   const data = await api('api/shares');
   document.getElementById('meta').innerHTML =
     `<small>NAS: ${data.nas_ip || '(unknown)'} | Protocol: ${data.protocol} | Default usage: ${data.default_usage}</small>`;
-  const tb = document.querySelector('#tbl tbody'); tb.innerHTML='';
+
+  const tb = document.querySelector('#tbl tbody');
+  tb.innerHTML='';
+
   for(const row of data.rows){
     const tr=document.createElement('tr');
-    tr.innerHTML = `<td>${row.share_name}</td><td>${row.mount_name}</td><td>${row.state || '-'}</td>
-                    <td>${row.usage}</td><td></td>`;
+
+    const statusText = row.state || '-';
+
+    tr.innerHTML = `<td>${row.share_name}</td>
+                    <td>${row.mount_name}</td>
+                    <td title="">${statusText}</td>
+                    <td>${row.usage}</td>
+                    <td></td>`;
+
+    const statusTd = tr.children[2];
     const actions = tr.children[4];
-actions.appendChild(
-  btn('Mount', async()=>{ 
-    const statusCell = tr.children[2];
-    // optional: show progress
-    statusCell.textContent = '⏳ mounting…';
 
-    try {
-      await api('api/mount', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ share_name: row.share_name, usage: row.usage })
-      });
-      await load(); // will refresh real mount state
-    } catch (e) {
-      const msg = String(e);
-      const low = msg.toLowerCase();
+    actions.appendChild(
+      btn('Mount', async()=>{ 
+        statusTd.textContent = '⏳ mounting…';
+        statusTd.title = '';
+        try {
+          await api('api/mount', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ share_name: row.share_name, usage: row.usage })
+          });
+          await load(); // refresh from Supervisor mounts
+        } catch (e) {
+          const msg = String(e);
+          const low = msg.toLowerCase();
+          if (low.includes('authorization required') || low.includes('access denied') || low.includes('permission denied') || low.includes('logon')) {
+            statusTd.textContent = '🔒 auth required';
+          } else {
+            statusTd.textContent = '⚠️ mount failed';
+          }
+          statusTd.title = msg;
+          // не делаем load(), чтобы не затереть подсказку сразу
+        }
+      })
+    );
 
-      if (low.includes('authorization') || low.includes('access denied') || low.includes('logon') || low.includes('permission denied')) {
-        statusCell.textContent = '🔒 auth required';
-      } else {
-        statusCell.textContent = '⚠️ mount failed';
+    actions.appendChild(btn('Reload', async()=>{
+      statusTd.textContent = '⏳ reloading…';
+      statusTd.title = '';
+      try {
+        await api('api/reload', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({mount_name:row.mount_name})
+        });
+        await load();
+      } catch(e){
+        statusTd.textContent = '⚠️ reload failed';
+        statusTd.title = String(e);
       }
-      // Keep details in tooltip for quick inspection
-      statusCell.title = msg;
-    }
-  })
-);
-actions.appendChild(btn('Reload', async()=>{ await api('api/reload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mount_name:row.mount_name})}); await load(); }));
-    actions.appendChild(btn('Unmount', async()=>{ await api('api/unmount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mount_name:row.mount_name})}); await load(); }));
+    }));
+
+    actions.appendChild(btn('Unmount', async()=>{
+      statusTd.textContent = '⏳ unmounting…';
+      statusTd.title = '';
+      try {
+        await api('api/unmount', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({mount_name:row.mount_name})
+        });
+        await load();
+      } catch(e){
+        statusTd.textContent = '⚠️ unmount failed';
+        statusTd.title = String(e);
+      }
+    }));
+
     actions.appendChild(btn('Creds', async()=>{
-  const cur = await api(`api/creds/${encodeURIComponent(row.share_name)}`);
-  const u = prompt(`Username for ${row.share_name}`, cur.username || '');
-  if(u === null) return;
-  const p = prompt(`Password for ${row.share_name} (leave blank to keep)`, '');
-  if(p === null) return;
-  await api(`api/creds/${encodeURIComponent(row.share_name)}`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({username:u, password:p})
-  });
-  await load();
-}));
+      try{
+        const cur = await api(`api/creds/${encodeURIComponent(row.share_name)}`);
+        const u = prompt(`Username for ${row.share_name}`, cur.username || '');
+        if(u === null) return;
+        const p = prompt(`Password for ${row.share_name} (leave blank to keep)`, '');
+        if(p === null) return;
+        await api(`api/creds/${encodeURIComponent(row.share_name)}`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({username:u, password:p})
+        });
+        statusTd.textContent = '🔐 creds saved';
+        statusTd.title = '';
+      } catch(e){
+        statusTd.textContent = '⚠️ creds failed';
+        statusTd.title = String(e);
+      }
+    }));
+
     tb.appendChild(tr);
   }
 }
-load().catch(e=>{ document.getElementById('meta').innerHTML = `<small style="color:#b00">${e}</small>`; });
+
+load().catch(e=>{
+  document.getElementById('meta').innerHTML = `<small style="color:#b00">${e}</small>`;
+});
 </script>
 </body></html>
 """
+
 
 @app.get("/api/shares")
 def api_shares():
@@ -200,12 +283,13 @@ def api_shares():
 
     mounts_data = supervisor_get_mounts()
     mounts = mounts_data.get("mounts", [])
+
     mounts_by_share = {}
     existing_mount_names = set()
 
     for m in mounts:
-        existing_mount_names.add(m["name"])
-        # для cifs удобно мапить по share
+        if m.get("name"):
+            existing_mount_names.add(m["name"])
         if m.get("type") == "cifs" and m.get("share"):
             mounts_by_share[m["share"]] = m
 
@@ -214,8 +298,10 @@ def api_shares():
         share_name = s.get("share_name")
         if not share_name:
             continue
+
         m = mounts_by_share.get(share_name)
         mount_name = m["name"] if m else build_mount_name("wdmc", share_name, existing_mount_names)
+
         rows.append({
             "share_name": share_name,
             "mount_name": mount_name,
@@ -230,114 +316,106 @@ def api_shares():
         "rows": rows,
     })
 
+
 @app.post("/api/mount")
 def api_mount():
     opt = addon_options()
     payload = request.get_json(force=True)
+
     share_name = payload["share_name"]
     usage = payload.get("usage", opt.get("default_usage", "share"))
 
-    shares_state = core_get_state(opt["shares_entity_id"])
     network_state = core_get_state(opt["network_entity_id"])
     nas_ip = extract_nas_ip(network_state)
     if not nas_ip:
         return jsonify({"error": "NAS IP not found in network summary attributes"}), 400
 
     mounts_data = supervisor_get_mounts()
-    existing_names = {m["name"] for m in mounts_data.get("mounts", [])}
+    existing_names = {m.get("name", "") for m in mounts_data.get("mounts", []) if m.get("name")}
 
     mount_name = build_mount_name("wdmc", share_name, existing_names)
 
     protocol = opt.get("protocol", "cifs")
+    if protocol != "cifs":
+        return jsonify({"error": "Only CIFS is implemented right now"}), 400
 
-    if protocol == "cifs":
-        creds = load_creds().get(share_name, {})
-        username = creds.get("username", opt.get("cifs_username",""))
-        password = creds.get("password", opt.get("cifs_password",""))
-        body = {
-            "name": mount_name,
-            "usage": usage,
-            "type": "cifs",
-            "server": nas_ip,
-            "share": share_name,
-            "username": username,
-            "password": password,
-            "read_only": False,
-            "has_creds": bool(creds.get(share_name, {}).get("password") or creds.get(share_name, {}).get("username")),
-        }
-    else:
-        # если решите NFS: "path" должен быть экспортируемым путём на NAS,
-        # а ваши /mnt/HD/... обычно не то, что экспортировано (надо брать NFS export path).
-        return jsonify({"error": "NFS not implemented in this skeleton"}), 400
+    creds = load_creds().get(share_name, {})
+    username = creds.get("username", opt.get("cifs_username", ""))
+    password = creds.get("password", opt.get("cifs_password", ""))
 
-        r = requests.post(f"{SUPERVISOR_BASE}/mounts", headers=HEADERS, json=body, timeout=20)
+    body = {
+        "name": mount_name,
+        "usage": usage,
+        "type": "cifs",
+        "server": nas_ip,
+        "share": share_name,
+        "username": username,
+        "password": password,
+        "read_only": False,
+    }
 
-        if not r.ok:
-        txt_raw = r.text or ""
-        txt = txt_raw.lower()
+    r = requests.post(f"{SUPERVISOR_BASE}/mounts", headers=HEADERS, json=body, timeout=25)
 
-        # auth/credentials style failures (if Supervisor passes them through)
-        if any(s in txt for s in (
-            "permission denied",
-            "access denied",
-            "authentication failed",
-            "nt_status_logon_failure",
-            "logon failure",
-            "invalid credentials",
-            "mount error(13)",
-            "status_access_denied",
-        )):
-            return jsonify({"error": "Authorization required for this share. Please set username/password."}), 401
+    if not r.ok:
+        err = _extract_supervisor_error_text(r)
+        if _looks_like_auth_error(err):
+            return jsonify({"error": "Authorization required: set username/password for this share."}), 401
+        # Generic fail but include supervisor message
+        return jsonify({"error": err[:500] if err else f"Mount failed with status {r.status_code}"}), 500
 
-        # Try to surface Supervisor's message cleanly (often {result:"error", message:"..."})
-        msg = txt_raw
-        try:
-            j = r.json()
-            if isinstance(j, dict) and j.get("message"):
-                msg = j["message"]
-        except Exception:
-            pass
-
-        return jsonify({"error": (msg[:500] if msg else f"Mount failed with status {r.status_code}")}), 500
+    # success
+    try:
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"ok": True})
 
 
 @app.get("/api/creds/<share_name>")
 def get_creds(share_name):
     creds = load_creds()
     c = creds.get(share_name, {})
-    # пароль не отдаём обратно в UI (можно отдавать флаг что он сохранён)
-    return jsonify({"username": c.get("username",""), "has_password": bool(c.get("password"))})
+    return jsonify({"username": c.get("username", ""), "has_password": bool(c.get("password"))})
+
 
 @app.post("/api/creds/<share_name>")
 def set_creds(share_name):
     payload = request.get_json(force=True)
     creds = load_creds()
+    existing = creds.get(share_name, {})
+    new_password = payload.get("password", "")
+    if new_password == "":
+        # keep existing password if user left blank
+        new_password = existing.get("password", "")
+
     creds[share_name] = {
-        "username": payload.get("username",""),
-        "password": payload.get("password",""),
-        "domain": payload.get("domain",""),
-        "vers": payload.get("vers",""),
+        "username": payload.get("username", ""),
+        "password": new_password,
+        "domain": payload.get("domain", ""),
+        "vers": payload.get("vers", ""),
     }
     save_creds(creds)
     return jsonify({"ok": True})
+
 
 @app.post("/api/reload")
 def api_reload():
     payload = request.get_json(force=True)
     name = payload["mount_name"]
-    r = requests.post(f"{SUPERVISOR_BASE}/mounts/{name}/reload", headers=HEADERS, timeout=20)
+    r = requests.post(f"{SUPERVISOR_BASE}/mounts/{name}/reload", headers=HEADERS, timeout=25)
     if not r.ok:
-        return jsonify({"error": r.text}), 500
+        return jsonify({"error": _extract_supervisor_error_text(r)[:500]}), 500
     return jsonify(r.json())
+
 
 @app.post("/api/unmount")
 def api_unmount():
     payload = request.get_json(force=True)
     name = payload["mount_name"]
-    r = requests.delete(f"{SUPERVISOR_BASE}/mounts/{name}", headers=HEADERS, timeout=20)
+    r = requests.delete(f"{SUPERVISOR_BASE}/mounts/{name}", headers=HEADERS, timeout=25)
     if not r.ok:
-        return jsonify({"error": r.text}), 500
+        return jsonify({"error": _extract_supervisor_error_text(r)[:500]}), 500
     return jsonify(r.json())
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8099)
