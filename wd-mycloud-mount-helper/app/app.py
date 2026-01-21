@@ -18,6 +18,18 @@ def addon_options():
         return json.load(f)
 
 def core_get_state(entity_id: str):
+    print("DEBUG: SUPERVISOR_TOKEN len =", len(SUPERVISOR_TOKEN))
+    test = requests.get(
+        f"{CORE_BASE}/api/config",
+        headers=HEADERS,
+        timeout=10
+    )
+    print(
+        "DEBUG: core/api/config status =",
+        test.status_code,
+        test.text[:200]
+    )
+
     url = f"{CORE_BASE}/api/states/{entity_id}"
     r = requests.get(url, headers=HEADERS, timeout=10)
     r.raise_for_status()
