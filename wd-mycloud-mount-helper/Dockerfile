@@ -9,4 +9,4 @@ RUN python3 -m venv /opt/venv \
 COPY app /app
 WORKDIR /app
 
-CMD ["/opt/venv/bin/python", "/app/app.py"]
+CMD ["/usr/bin/with-contenv", "/opt/venv/bin/python", "/app/app.py"]
