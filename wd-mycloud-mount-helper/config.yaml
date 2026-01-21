@@ -1,0 +1,30 @@
+name: "WD My Cloud Mount Helper"
+slug: "wd_mycloud_mount_helper"
+description: "Ingress UI to mount WD My Cloud shares via Supervisor /mounts"
+version: "0.1.0"
+arch: [amd64, aarch64, armv7, armhf, i386]
+startup: application
+boot: auto
+
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:nas
+panel_title: "WD Mounts"
+
+hassio_api: true
+homeassistant_api: true
+
+options:
+  shares_entity_id: "sensor.mycloudex2ultra_shares_count"
+  network_entity_id: "sensor.mycloudex2ultra_network_summary"
+  protocol: "cifs"     # или nfs
+  default_usage: "share"  # share|media|backup
+  cifs_username: ""
+  cifs_password: ""
+schema:
+  shares_entity_id: str
+  network_entity_id: str
+  protocol: list(cifs|nfs)
+  default_usage: list(share|media|backup)
+  cifs_username: str?
+  cifs_password: password?
