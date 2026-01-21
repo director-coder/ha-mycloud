@@ -72,7 +72,7 @@ def extract_nas_ip(network_state: dict) -> str:
 
 def extract_shares(shares_state: dict):
     attrs = shares_state.get("attributes", {}) or {}
-    shares = attrs.get("Shares") or []
+    shares = attrs.get("shares") or []
     # expected: [{share_name:..., path:...}, ...]
     return shares
 
