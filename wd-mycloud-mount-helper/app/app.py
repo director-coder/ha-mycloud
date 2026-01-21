@@ -40,6 +40,9 @@ def core_get_state(entity_id: str):
     return r.json()
 
 def supervisor_get_mounts():
+    r = requests.get("http://supervisor/info", headers=HEADERS, timeout=10)
+    print("DEBUG supervisor/info", r.status_code, r.text[:120], file=sys.stderr, flush=True)
+
     url = f"{SUPERVISOR_BASE}/mounts"
     r = requests.get(url, headers=HEADERS, timeout=10)
     r.raise_for_status()
