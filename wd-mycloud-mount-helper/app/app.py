@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import sys
 import requests
@@ -11,6 +12,18 @@ HEADERS = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
 
 SUPERVISOR_BASE = "http://supervisor"
 CORE_BASE = "http://supervisor/core"
+
+CREDS_PATH = "/data/credentials.json"
+
+def load_creds():
+    if not os.path.exists(CREDS_PATH):
+        return {}
+    with open(CREDS_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_creds(data):
+    with open(CREDS_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 def addon_options():
     # Supervisor injects add-on options into /data/options.json
@@ -114,6 +127,18 @@ async function load(){
     actions.appendChild(btn('Mount', async()=>{ await api('api/mount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({share_name:row.share_name, usage:row.usage})}); await load(); }));
     actions.appendChild(btn('Reload', async()=>{ await api('api/reload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mount_name:row.mount_name})}); await load(); }));
     actions.appendChild(btn('Unmount', async()=>{ await api('api/unmount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mount_name:row.mount_name})}); await load(); }));
+    actions.appendChild(btn('Creds', async()=>{
+  const cur = await api(`api/creds/${encodeURIComponent(row.share_name)}`);
+  const u = prompt(`Username for ${row.share_name}`, cur.username || '');
+  if(u === null) return;
+  const p = prompt(`Password for ${row.share_name} (leave blank to keep)`, '');
+  if(p === null) return;
+  await api(`api/creds/${encodeURIComponent(row.share_name)}`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({username:u, password:p})
+  });
+  await load();
+}));
     tb.appendChild(tr);
   }
 }
@@ -185,15 +210,19 @@ def api_mount():
     protocol = opt.get("protocol", "cifs")
 
     if protocol == "cifs":
+        creds = load_creds().get(share_name, {})
+        username = creds.get("username", opt.get("cifs_username",""))
+        password = creds.get("password", opt.get("cifs_password",""))
         body = {
             "name": mount_name,
             "usage": usage,
             "type": "cifs",
             "server": nas_ip,
             "share": share_name,
-            "username": opt.get("cifs_username", ""),
-            "password": opt.get("cifs_password", ""),
+            "username": username,
+            "password": password,
             "read_only": False,
+            "has_creds": bool(creds.get(share_name, {}).get("password") or creds.get(share_name, {}).get("username")),
         }
     else:
         # если решите NFS: "path" должен быть экспортируемым путём на NAS,
@@ -204,6 +233,26 @@ def api_mount():
     if not r.ok:
         return jsonify({"error": r.text}), 500
     return jsonify(r.json())
+
+@app.get("/api/creds/<share_name>")
+def get_creds(share_name):
+    creds = load_creds()
+    c = creds.get(share_name, {})
+    # пароль не отдаём обратно в UI (можно отдавать флаг что он сохранён)
+    return jsonify({"username": c.get("username",""), "has_password": bool(c.get("password"))})
+
+@app.post("/api/creds/<share_name>")
+def set_creds(share_name):
+    payload = request.get_json(force=True)
+    creds = load_creds()
+    creds[share_name] = {
+        "username": payload.get("username",""),
+        "password": payload.get("password",""),
+        "domain": payload.get("domain",""),
+        "vers": payload.get("vers",""),
+    }
+    save_creds(creds)
+    return jsonify({"ok": True})
 
 @app.post("/api/reload")
 def api_reload():
