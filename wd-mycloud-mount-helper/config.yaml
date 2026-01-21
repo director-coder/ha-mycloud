@@ -1,10 +1,11 @@
 name: "WD My Cloud Mount Helper"
 slug: "wd_mycloud_mount_helper"
 description: "Ingress UI to mount WD My Cloud shares via Supervisor /mounts"
-version: "0.1.2"
+version: "0.1.3"
 arch: [amd64, aarch64, armv7, armhf, i386]
 startup: application
 boot: auto
+init: false
 
 ingress: true
 ingress_port: 8099
