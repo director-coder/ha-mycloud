@@ -83,7 +83,7 @@ async function api(path, opts){ const r=await fetch(path, opts); if(!r.ok) throw
 function btn(label, onclick){ const b=document.createElement('button'); b.textContent=label; b.onclick=onclick; return b; }
 
 async function load(){
-  const data = await api('/api/shares');
+  const data = await api('api/shares');
   document.getElementById('meta').innerHTML =
     `<small>NAS: ${data.nas_ip || '(unknown)'} | Protocol: ${data.protocol} | Default usage: ${data.default_usage}</small>`;
   const tb = document.querySelector('#tbl tbody'); tb.innerHTML='';
@@ -92,9 +92,9 @@ async function load(){
     tr.innerHTML = `<td>${row.share_name}</td><td>${row.mount_name}</td><td>${row.state || '-'}</td>
                     <td>${row.usage}</td><td></td>`;
     const actions = tr.children[4];
-    actions.appendChild(btn('Mount', async()=>{ await api('/api/mount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({share_name:row.share_name, usage:row.usage})}); await load(); }));
-    actions.appendChild(btn('Reload', async()=>{ await api('/api/reload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mount_name:row.mount_name})}); await load(); }));
-    actions.appendChild(btn('Unmount', async()=>{ await api('/api/unmount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mount_name:row.mount_name})}); await load(); }));
+    actions.appendChild(btn('Mount', async()=>{ await api('api/mount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({share_name:row.share_name, usage:row.usage})}); await load(); }));
+    actions.appendChild(btn('Reload', async()=>{ await api('api/reload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mount_name:row.mount_name})}); await load(); }));
+    actions.appendChild(btn('Unmount', async()=>{ await api('api/unmount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mount_name:row.mount_name})}); await load(); }));
     tb.appendChild(tr);
   }
 }
