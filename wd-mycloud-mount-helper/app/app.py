@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import requests
 from flask import Flask, request, jsonify
 
@@ -18,7 +19,8 @@ def addon_options():
         return json.load(f)
 
 def core_get_state(entity_id: str):
-    print("DEBUG: SUPERVISOR_TOKEN len =", len(SUPERVISOR_TOKEN))
+    print("DEBUG: SUPERVISOR_TOKEN len =", len(SUPERVISOR_TOKEN), file=sys.stderr, flush=True)
+
     test = requests.get(
         f"{CORE_BASE}/api/config",
         headers=HEADERS,
@@ -27,7 +29,9 @@ def core_get_state(entity_id: str):
     print(
         "DEBUG: core/api/config status =",
         test.status_code,
-        test.text[:200]
+        test.text[:200],
+        file=sys.stderr,
+        flush=True
     )
 
     url = f"{CORE_BASE}/api/states/{entity_id}"
