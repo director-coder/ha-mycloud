@@ -35,10 +35,13 @@ def addon_options():
     with open("/data/options.json", "r", encoding="utf-8") as f:
         return json.load(f)
 
-
 def core_get_state(entity_id: str):
     url = f"{CORE_BASE}/api/states/{entity_id}"
     r = requests.get(url, headers=HEADERS, timeout=10)
+
+    if r.status_code == 404:
+        return None
+
     r.raise_for_status()
     return r.json()
 
@@ -162,8 +165,9 @@ function btn(label, onclick){
 
 async function load(){
   const data = await api('api/shares');
+  const warn = data.warning ? ` | <span style="color:#b00">${data.warning}</span>` : '';
   document.getElementById('meta').innerHTML =
-    `<small>NAS: ${data.nas_ip || '(unknown)'} | Protocol: ${data.protocol} | Default usage: ${data.default_usage}</small>`;
+    `<small>NAS: ${data.nas_ip || '(unknown)'} | Protocol: ${data.protocol} | Default usage: ${data.default_usage}${warn}</small>`;
 
   const tb = document.querySelector('#tbl tbody');
   tb.innerHTML='';
@@ -292,6 +296,21 @@ def api_shares():
 
     shares_state = core_get_state(opt["shares_entity_id"])
     network_state = core_get_state(opt["network_entity_id"])
+
+    if shares_state is None or network_state is None:
+        missing = []
+        if shares_state is None:
+            missing.append(opt["shares_entity_id"])
+        if network_state is None:
+            missing.append(opt["network_entity_id"])
+
+        return jsonify({
+            "nas_ip": "",
+            "protocol": opt.get("protocol", "cifs"),
+            "default_usage": opt.get("default_usage", "share"),
+            "rows": [],
+            "warning": f"Entities not found (integration not running?): {', '.join(missing)}"
+        })
 
     nas_ip = extract_nas_ip(network_state)
     shares = extract_shares(shares_state)
