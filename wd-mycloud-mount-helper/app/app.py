@@ -124,7 +124,34 @@ async function load(){
     tr.innerHTML = `<td>${row.share_name}</td><td>${row.mount_name}</td><td>${row.state || '-'}</td>
                     <td>${row.usage}</td><td></td>`;
     const actions = tr.children[4];
-    actions.appendChild(btn('Mount', async()=>{ await api('api/mount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({share_name:row.share_name, usage:row.usage})}); await load(); }));
+actions.appendChild(
+  btn('Mount', async()=>{ 
+    try {
+      await api('api/mount', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          share_name: row.share_name,
+          usage: row.usage
+        })
+      });
+    } catch (e) {
+      const msg = String(e).toLowerCase();
+
+      if (msg.includes('authorization') || msg.includes('access denied')) {
+        alert(`🔒 Authorization required for share "${row.share_name}".\nPlease set username/password.`);
+        return; // НЕ делаем load(), статус пока "-"
+      } else {
+        alert(e);
+        return;
+      }
+    }
+
+    // если дошли сюда — mount прошёл успешно
+    await load();
+  })
+);
+
     actions.appendChild(btn('Reload', async()=>{ await api('api/reload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mount_name:row.mount_name})}); await load(); }));
     actions.appendChild(btn('Unmount', async()=>{ await api('api/unmount',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mount_name:row.mount_name})}); await load(); }));
     actions.appendChild(btn('Creds', async()=>{
@@ -229,10 +256,25 @@ def api_mount():
         # а ваши /mnt/HD/... обычно не то, что экспортировано (надо брать NFS export path).
         return jsonify({"error": "NFS not implemented in this skeleton"}), 400
 
-    r = requests.post(f"{SUPERVISOR_BASE}/mounts", headers=HEADERS, json=body, timeout=20)
-    if not r.ok:
-        return jsonify({"error": r.text}), 500
-    return jsonify(r.json())
+        r = requests.post(f"{SUPERVISOR_BASE}/mounts", headers=HEADERS, json=body, timeout=20)
+
+        if not r.ok:
+            txt = (r.text or "").lower()
+
+            if any(s in txt for s in (
+                "permission denied",
+                "access denied",
+                "authentication failed",
+                "logon failure",
+                "mount error(13)",
+                "status_access_denied",
+            )):
+                return jsonify({
+                    "error": "Authorization required for this share. Please set username/password."
+                }), 401
+
+            return jsonify({"error": r.text[:500]}), 500
+
 
 @app.get("/api/creds/<share_name>")
 def get_creds(share_name):
